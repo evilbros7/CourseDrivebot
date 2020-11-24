@@ -1,12 +1,14 @@
 import requests
 from telegram.ext import CommandHandler, run_async
+from telegram import InlineKeyboardMarkup
 
-from bot import Interval, INDEX_URL,LOGGER
+from bot import Interval, INDEX_URL, BUTTON_THREE_NAME, BUTTON_THREE_URL, BUTTON_FOUR_NAME, BUTTON_FOUR_URL, BUTTON_FIVE_NAME, BUTTON_FIVE_URL
 from bot import dispatcher, DOWNLOAD_DIR, DOWNLOAD_STATUS_UPDATE_INTERVAL, download_dict, download_dict_lock
 from bot.helper.ext_utils import fs_utils, bot_utils
 from bot.helper.ext_utils.bot_utils import setInterval
-from bot.helper.ext_utils.exceptions import DirectDownloadLinkException, NotSupportedExtractionArchive
+from bot.helper.ext_utils.exceptions import DirectDownloadLinkException
 from bot.helper.mirror_utils.download_utils.aria2_download import AriaDownloadHelper
+from bot.helper.mirror_utils.download_utils.mega_downloader import MegaDownloadHelper
 from bot.helper.mirror_utils.download_utils.direct_link_generator import direct_link_generator
 from bot.helper.mirror_utils.download_utils.telegram_downloader import TelegramDownloadHelper
 from bot.helper.mirror_utils.status_utils import listeners
@@ -17,16 +19,16 @@ from bot.helper.mirror_utils.upload_utils import gdriveTools
 from bot.helper.telegram_helper.bot_commands import BotCommands
 from bot.helper.telegram_helper.filters import CustomFilters
 from bot.helper.telegram_helper.message_utils import *
+from bot.helper.telegram_helper import button_build
 import pathlib
 import os
-import subprocess
-import threading
 
 ariaDlManager = AriaDownloadHelper()
 ariaDlManager.start_listener()
 
+
 class MirrorListener(listeners.MirrorListeners):
-    def __init__(self, bot, update, isTar=False,tag=None, extract=False):
+    def __init__(self, bot, update, isTar=False, tag=None, extract=False):
         super().__init__(bot, update)
         self.isTar = isTar
         self.tag = tag
@@ -66,29 +68,30 @@ class MirrorListener(listeners.MirrorListeners):
                 return
         elif self.extract:
             download.is_extracting = True
-            try:
-                path = fs_utils.get_base_name(m_path)
+
+            path = fs_utils.get_base_name(m_path)
+            if path != "unsupported":
                 LOGGER.info(
-                    f"Extracting : {name} "
+                    f"Extracting : {download_dict[self.uid].name()} "
                 )
-                with download_dict_lock:
-                    download_dict[self.uid] = ExtractStatus(name, m_path, size)
-                archive_result = subprocess.run(["extract", m_path])
-                if archive_result.returncode == 0:
-                    threading.Thread(target=os.remove, args=(m_path,)).start()
-                    LOGGER.info(f"Deleting archive : {m_path}")
-                else:
-                    LOGGER.warning('Unable to extract archive! Uploading anyway')
-                    path = f'{DOWNLOAD_DIR}{self.uid}/{name}'
+                download_dict[self.uid] = ExtractStatus(name, m_path, size)
+                os.system(f"extract '{m_path}'")
+                if not os.path.exists(path):
+                    self.onUploadError("Cannot extract file, check integrity of the file")
+                    return
                 LOGGER.info(
                     f'got path : {path}'
                 )
-
-            except NotSupportedExtractionArchive:
+                try:
+                    os.remove(m_path)
+                    LOGGER.info(f"Deleting archive : {m_path}")
+                except Exception as e:
+                    LOGGER.error(str(e))
+            else:
                 LOGGER.info("Not any valid archive, uploading file as it is.")
-                path = f'{DOWNLOAD_DIR}{self.uid}/{name}'
+                path = f'{DOWNLOAD_DIR}{self.uid}/{download_dict[self.uid].name()}'
         else:
-            path = f'{DOWNLOAD_DIR}{self.uid}/{name}'
+            path = f'{DOWNLOAD_DIR}{self.uid}/{download_dict[self.uid].name()}'
         up_name = pathlib.PurePath(path).name
         LOGGER.info(f"Upload Name : {up_name}")
         drive = gdriveTools.GoogleDriveHelper(up_name, self)
@@ -101,8 +104,7 @@ class MirrorListener(listeners.MirrorListeners):
         drive.upload(up_name)
 
     def onDownloadError(self, error):
-        error = error.replace('<', ' ')
-        error = error.replace('>', ' ')
+        
         LOGGER.info(self.update.effective_chat.id)
         with download_dict_lock:
             try:
@@ -134,22 +136,34 @@ class MirrorListener(listeners.MirrorListeners):
 
     def onUploadComplete(self, link: str):
         with download_dict_lock:
-            msg = f'<a href="{link}">{download_dict[self.uid].name()}</a> ({download_dict[self.uid].size()})'
+            msg = f'<u>𝗣𝗼𝘄𝗲𝗿𝗲𝗱 𝗕𝘆</u> <a href="https://t.me/premiumcoursesdrive">📚 Courses Drive 📚</a>\n\n𝗙𝗶𝗹𝗲𝗻𝗮𝗺𝗲🗂 : <code>{download_dict[self.uid].name()}</code>\n𝗦𝗶𝘇𝗲 ⚖️ : <code>{download_dict[self.uid].size()}</code>\n\nOnly Use TeamDrive Link if you have Access.\nDon\'t request access through this link'
+            buttons = button_build.ButtonMaker()
+            buttons.buildbutton("📚 Course Link 📚", link)
             LOGGER.info(f'Done Uploading {download_dict[self.uid].name()}')
             if INDEX_URL is not None:
                 share_url = requests.utils.requote_uri(f'{INDEX_URL}/{download_dict[self.uid].name()}')
                 if os.path.isdir(f'{DOWNLOAD_DIR}/{self.uid}/{download_dict[self.uid].name()}'):
                     share_url += '/'
-                msg += f'\n\n Shareable link: <a href="{share_url}">here</a>'
-            if self.tag is not None:
-                msg += f'\ncc: @{self.tag}'
+                buttons.buildbutton("✳️Index Link✳️", share_url)
+            if BUTTON_THREE_NAME is not None and BUTTON_THREE_URL is not None:
+                  buttons.buildbutton(f"{BUTTON_THREE_NAME}", f"{BUTTON_THREE_URL}")
+            if BUTTON_FOUR_NAME is not None and BUTTON_FOUR_URL is not None:
+                  buttons.buildbutton(f"{BUTTON_FOUR_NAME}", f"{BUTTON_FOUR_URL}")
+            if BUTTON_FIVE_NAME is not None and BUTTON_FIVE_URL is not None:
+                  buttons.buildbutton(f"{BUTTON_FIVE_NAME}", f"{BUTTON_FIVE_URL}")
+            if self.message.from_user.username:
+                uname = f"@{self.message.from_user.username}"
+            else:
+                uname = f'<a href="tg://user?id={self.message.from_user.id}">{self.message.from_user.first_name}</a>'
+            if uname is not None:
+                msg += f'\n\n𝗨𝗽𝗹𝗼𝗮𝗱𝗲𝗿 :  {uname}'
             try:
                 fs_utils.clean_download(download_dict[self.uid].path())
             except FileNotFoundError:
                 pass
             del download_dict[self.uid]
             count = len(download_dict)
-        sendMessage(msg, self.bot, self.update)
+        sendMarkup(msg, self.bot, self.update, InlineKeyboardMarkup(buttons.build_menu(2)))
         if count == 0:
             self.clean()
         else:
@@ -169,6 +183,7 @@ class MirrorListener(listeners.MirrorListeners):
             self.clean()
         else:
             update_all_messages()
+
 
 def _mirror(bot, update, isTar=False, extract=False):
     message_args = update.message.text.split(' ')
@@ -203,17 +218,23 @@ def _mirror(bot, update, isTar=False, extract=False):
     else:
         tag = None
     if not bot_utils.is_url(link) and not bot_utils.is_magnet(link):
-        sendMessage('No download source provided', bot, update)
+        sendMessage('🤦‍♂ No download source provided 😝', bot, update)
         return
 
     try:
         link = direct_link_generator(link)
     except DirectDownloadLinkException as e:
         LOGGER.info(f'{link}: {e}')
-
     listener = MirrorListener(bot, update, isTar, tag, extract)
-    ariaDlManager.add_download(link, f'{DOWNLOAD_DIR}/{listener.uid}/',listener)
-    sendStatusMessage(update, bot)
+    if bot_utils.is_mega_link(link):
+        mega_dl = MegaDownloadHelper()
+        mega_dl.add_download(link, f'{DOWNLOAD_DIR}/{listener.uid}/', listener)
+    else:
+        ariaDlManager.add_download(link, f'{DOWNLOAD_DIR}/{listener.uid}/', listener)
+    uname = f'<a href="tg://user?id={update.message.from_user.id}">{update.message.from_user.first_name}</a>'
+    msg = f"{uname} Your Requested Link/Magnet/Torrent Has been added for Downloading 😪.\nUse /{BotCommands.StatusCommand} to Check."
+    sendMessage(msg, bot, update)
+    
     if len(Interval) == 0:
         Interval.append(setInterval(DOWNLOAD_STATUS_UPDATE_INTERVAL, update_all_messages))
 
@@ -230,7 +251,7 @@ def tar_mirror(update, context):
 
 @run_async
 def unzip_mirror(update, context):
-    _mirror(context.bot,update, extract=True)
+    _mirror(context.bot, update, extract=True)
 
 
 mirror_handler = CommandHandler(BotCommands.MirrorCommand, mirror,
